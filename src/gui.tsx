@@ -320,6 +320,20 @@ export default Plugin.define({
     };
 
     const installHandyApp = async () => {
+      try {
+        const existing = await handy.check(settings().handyPath);
+        if (existing.handy) {
+          notify({
+            title: "Handy уже установлен",
+            description: existing.path,
+            variant: "success",
+            duration: 8000,
+          });
+          return;
+        }
+      } catch {
+        // Fall through to the installer.
+      }
       const loading = ctx.toast.show({
         title: "Установка Handy…",
         description: "Это может занять пару минут.",

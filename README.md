@@ -40,7 +40,7 @@ opencode plugin add github:ivalushin0/opencode-handy-voice
 
 ```jsonc
 {
-  "plugins": [{ "package": "D:\\Dev\\BBhub\\opencode-plugin-handy-voice" }],
+  "plugins": [{ "package": "/path/to/opencode-handy-voice" }],
 }
 ```
 

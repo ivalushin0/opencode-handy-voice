@@ -1,19 +1,16 @@
 import { createSignal, type Accessor, type JSX } from "solid-js";
 import type { Persisted, System, Ui } from "@opencode/plugin/gui";
-import {
-  DEFAULT_LANGUAGE,
-  DEFAULT_MODEL,
-  MODELS_URL,
-  type Settings,
-  isLanguage,
-  isModel,
-} from "./settings.ts";
+import { HANDY_URL, type Settings, isModel } from "./settings.ts";
 
 type Props = {
   ui: Ui;
   system: System;
   settings: Persisted<Settings, Settings>;
   keys: Accessor<readonly string[]>;
+  onCheck: () => void | Promise<void>;
+  onInstall: () => void | Promise<void>;
+  onOpenHandy: () => void | Promise<void>;
+  onPickModel: () => void | Promise<void>;
 };
 
 // The markup of the host's settings screens, whose stylesheet gives the page its look. Desktop 2.2.5 has no
@@ -50,7 +47,7 @@ function Row(props: { title: string; description: JSX.Element; children: JSX.Ele
   );
 }
 
-// A text setting saved on Enter or Apply, so a half-typed model name never triggers a download.
+// A text setting saved on Enter or Apply, so a half-typed value is never used.
 function TextRow(props: {
   ui: Ui;
   title: string;
@@ -81,7 +78,7 @@ function TextRow(props: {
           />
         </div>
         <props.ui.Button variant="neutral" disabled={!valid() || !dirty()} onClick={save}>
-          Apply
+          Применить
         </props.ui.Button>
       </div>
     </Row>
@@ -100,24 +97,48 @@ export function SettingsView(props: Props) {
     return keys.length ? (
       <props.ui.Keybind keys={keys} />
     ) : (
-      <span class="text-v2-text-text-muted">Not bound</span>
+      <span class="text-v2-text-text-muted">Не назначено</span>
     );
   };
 
   return (
     <Layout
-      title="Dictation"
-      description="Voice dictation on your Mac with whisper.cpp. No audio leaves the machine."
+      title="Handy Voice"
+      description="Локальная диктовка через Handy. Звук и текст не уходят с компьютера."
     >
       <Row
-        title="Shortcut"
-        description="Change it in Settings → Shortcuts, under Dictation: record / transcribe."
+        title="Установка Handy"
+        description="Windows: winget (cjpais.Handy). macOS: Homebrew. Если пакетного менеджера нет — откроется сайт."
+      >
+        <props.ui.Button variant="neutral" onClick={() => void props.onInstall()}>
+          Установить
+        </props.ui.Button>
+      </Row>
+      <Row
+        title="Открыть Handy"
+        description="Откройте Handy, скачайте модель и вернитесь сюда, чтобы выбрать её."
+      >
+        <props.ui.Button variant="neutral" onClick={() => void props.onOpenHandy()}>
+          Открыть
+        </props.ui.Button>
+      </Row>
+      <Row
+        title="Модели Handy"
+        description="Список моделей Handy: скачанные отмечены галочкой. Для русского — GigaAM v3."
+      >
+        <props.ui.Button variant="neutral" onClick={() => void props.onPickModel()}>
+          Выбрать
+        </props.ui.Button>
+      </Row>
+      <Row
+        title="Сочетание клавиш"
+        description="Меняется в Settings → Shortcuts, раздел Handy Voice: диктовка."
       >
         {shortcut()}
       </Row>
       <Row
         title="Push-to-talk"
-        description="Hold the shortcut while you talk, and let go to stop. Off: press once to start, once to stop."
+        description="Удерживайте сочетание, пока говорите, и отпустите, чтобы остановить. Выключено: нажатие — старт, ещё одно — стоп."
       >
         <props.ui.Switch
           label="Push-to-talk"
@@ -126,45 +147,51 @@ export function SettingsView(props: Props) {
           onChange={(checked) => set("pushToTalk", checked)}
         />
       </Row>
-      <Row title="Send automatically" description="Send the transcript as soon as it is ready.">
+      <Row title="Отправлять сразу" description="Отправлять расшифровку сразу, без проверки.">
         <props.ui.Switch
-          label="Send automatically"
+          label="Отправлять сразу"
           hideLabel
           checked={value().autoSend}
           onChange={(checked) => set("autoSend", checked)}
         />
       </Row>
+      <Row title="Проверка" description="Убедиться, что Handy установлен и доступен из OpenCode.">
+        <props.ui.Button variant="neutral" onClick={() => void props.onCheck()}>
+          Проверить
+        </props.ui.Button>
+      </Row>
       <TextRow
         ui={props.ui}
-        title="Language"
-        value={value().language}
-        placeholder={DEFAULT_LANGUAGE}
-        valid={isLanguage}
-        save={(next) => set("language", next || DEFAULT_LANGUAGE)}
-        description="A whisper language code such as en or fr, or auto to detect it (adds a short delay)."
+        title="Путь к Handy"
+        value={value().handyPath}
+        placeholder="Найти автоматически"
+        valid={() => true}
+        save={(next) => set("handyPath", next)}
+        description={
+          <>
+            Пусто — найти автоматически. На Windows обычно{" "}
+            <code>%LOCALAPPDATA%\Handy\handy.exe</code>. Скачать:{" "}
+            <a
+              href={HANDY_URL}
+              onClick={(event) => {
+                event.preventDefault();
+                props.system.openExternal(HANDY_URL);
+              }}
+            >
+              handy.computer
+            </a>
+            .
+          </>
+        }
       />
       <TextRow
         ui={props.ui}
-        title="Model"
+        title="Модель"
         value={value().model}
-        placeholder={DEFAULT_MODEL}
+        placeholder="Модель из Handy"
         valid={isModel}
-        save={(next) => set("model", next || DEFAULT_MODEL)}
-        description={
-          <>
-            Any whisper.cpp model from{" "}
-            <a
-              href={MODELS_URL}
-              onClick={(event) => {
-                event.preventDefault();
-                props.system.openExternal(MODELS_URL);
-              }}
-            >
-              Hugging Face
-            </a>
-            , named without ggml- and .bin. Downloads on first use.
-          </>
-        }
+        save={(next) => set("model", next)}
+        description="Пусто — модель, выбранная в Handy. Для русского: GigaAM v3 (gigaam-v3-e2e-rnnt)."
       />
     </Layout>
   );

@@ -1,15 +1,26 @@
 {
-  "name": "opencode-dictation",
-  "version": "0.3.1",
+  "name": "opencode-handy-voice",
+  "version": "0.1.0",
   "private": true,
-  "description": "Local voice dictation for OpenCode Desktop on macOS, with whisper.cpp.",
-  "homepage": "https://github.com/qonto/opencode-dictation#readme",
-  "bugs": "https://github.com/qonto/opencode-dictation/issues",
+  "description": "Local voice dictation for OpenCode Desktop through Handy (GigaAM, Parakeet, Whisper).",
+  "keywords": [
+    "dictation",
+    "gigaam",
+    "handy",
+    "opencode",
+    "opencode-plugin",
+    "speech-to-text",
+    "whisper"
+  ],
+  "homepage": "https://github.com/ivalushin0/opencode-handy-voice#readme",
+  "bugs": {
+    "url": "https://github.com/ivalushin0/opencode-handy-voice/issues"
+  },
   "license": "MIT",
-  "author": "Qonto",
+  "author": "ivalushin0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/qonto/opencode-dictation.git"
+    "url": "git+https://github.com/ivalushin0/opencode-handy-voice.git"
   },
   "files": [
     "dist"
@@ -28,9 +39,9 @@
     "bundle": "vite build"
   },
   "devDependencies": {
-    "@opencode/plugin": "^2.2.5",
+    "@opencode/plugin": "^2.3.2",
     "@types/node": "^24.19.2",
-    "effect": "4.0.6",
+    "effect": "4.1.0",
     "oxfmt": "0.79.0",
     "oxlint": "1.65.0",
     "solid-js": "^1.9.0",

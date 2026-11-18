@@ -13,8 +13,16 @@ import {
 } from "@opencode/plugin/gui";
 import { type Recording, record } from "./recorder.ts";
 import { SettingsView } from "./settings-page.tsx";
-import { DEFAULT_SETTINGS, Settings, resolveLanguage, resolveModel } from "./settings.ts";
-import { downloadModel, findModel, findWhisper, modelSize, transcribe } from "./whisper.ts";
+import { DEFAULT_SETTINGS, HANDY_URL, Settings, resolveModel } from "./settings.ts";
+import {
+  check as checkHandy,
+  install as installHandy,
+  listModels,
+  openApp,
+  resolveHandyPath,
+  transcribe,
+} from "./handy.ts";
+import { type ComposerButtonState, mountComposerButton } from "./composer-button.ts";
 import { MAX_SECONDS } from "./wav.ts";
 
 // RMS above this counts as sound. Silence with noise suppression stays well below.
@@ -34,30 +42,49 @@ const formatElapsed = (ms: number) => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 };
 
-type Status =
-  | { kind: "dictating"; elapsed: number; heard: boolean }
-  | { kind: "transcribing" }
-  | { kind: "downloading"; size: string };
+type Status = { kind: "dictating"; elapsed: number; heard: boolean } | { kind: "transcribing" };
 
-const DictationIpc = Ipc.define({
-  id: "opencode-dictation.whisper",
+const Model = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  description: Schema.String,
+  sizeMb: Schema.Number,
+  downloaded: Schema.Boolean,
+  recommended: Schema.Boolean,
+  languages: Schema.Array(Schema.String),
+});
+
+const HandyIpc = Ipc.define({
+  id: "opencode-handy-voice.transcribe",
   methods: {
     check: {
       input: Schema.String,
       output: Schema.Struct({
-        whisper: Schema.Boolean,
-        model: Schema.Boolean,
-        name: Schema.String,
-        size: Schema.String,
+        handy: Schema.Boolean,
+        path: Schema.String,
         error: Schema.optional(Schema.String),
       }),
     },
-    download: { input: Schema.String },
+    models: {
+      input: Schema.String,
+      output: Schema.Array(Model),
+    },
+    install: {
+      output: Schema.Struct({
+        ok: Schema.Boolean,
+        message: Schema.String,
+        manual: Schema.optional(Schema.Boolean),
+      }),
+    },
+    open: {
+      input: Schema.String,
+      output: Schema.Boolean,
+    },
     transcribe: {
       input: Schema.Struct({
         wav: Schema.Uint8Array,
+        handyPath: Schema.String,
         model: Schema.String,
-        language: Schema.String,
       }),
       output: Schema.String,
     },
@@ -65,19 +92,20 @@ const DictationIpc = Ipc.define({
 });
 
 export default Plugin.define({
-  os: ["macos"],
   stores: {
     settings: Store.global(Settings, DEFAULT_SETTINGS),
     intro: Store.global(Schema.Struct({ seen: Schema.Boolean }), { seen: false }),
   },
 
   setup(ctx) {
-    const whisper = ctx.main(DictationIpc);
+    const handy = ctx.main(HandyIpc);
     const settings = () => ctx.stores.settings.value;
     const recordCommand = `${ctx.id}.record`;
     // The keydown that holds the record shortcut, while it is held.
     let held: KeyboardEvent | undefined;
     let recording: Recording | undefined;
+    // The session that was open when recording started. Use its id: the routing key can change.
+    let targetId: string | undefined;
     let busy = false;
     let toast: ToastHandle | undefined;
     let meter: ReturnType<typeof setInterval> | undefined;
@@ -86,6 +114,15 @@ export default Plugin.define({
     const notify = (options: ToastOptions) => {
       toast?.dismiss();
       toast = ctx.toast.show(options);
+    };
+
+    const errorText = (err: unknown) => {
+      const name = err instanceof Error ? err.name : "";
+      if (name === "NotAllowedError" || name === "SecurityError")
+        return "Нет доступа к микрофону. Разрешите его для OpenCode.";
+      if (name === "NotFoundError") return "Микрофон не найден.";
+      if (name === "NotReadableError") return "Микрофон занят другим приложением.";
+      return err instanceof Error ? err.message : String(err);
     };
 
     const startMeter = (current: Recording) => {
@@ -109,6 +146,7 @@ export default Plugin.define({
       clearInterval(meter);
       meter = undefined;
       recording = undefined;
+      targetId = undefined;
       setStatus(undefined);
     };
 
@@ -119,50 +157,33 @@ export default Plugin.define({
 
     onCleanup(discard);
 
-    const recordKeys = () => ctx.keybinds.keybind(recordCommand).join("");
+    const recordKeys = () => ctx.keybinds.keybind(recordCommand).join("+");
 
-    // True when whisper-cli and the model are ready, after an optional download.
+    // Handy is an external app; check that its binary is reachable before opening the mic.
     const ready = async () => {
-      const check = await whisper.check(settings().model);
+      const check = await handy.check(settings().handyPath);
       if (check.error) {
-        notify({ title: check.error, variant: "error" });
+        notify({ title: check.error, variant: "error", duration: 10000 });
         return false;
-      }
-      if (!check.whisper) {
-        notify({
-          title: "whisper-cli not found",
-          description: "Install it with: brew install whisper-cpp",
-          variant: "error",
-        });
-        return false;
-      }
-      if (check.model) return true;
-      const confirmed = await ctx.dialogs.confirm({
-        title: "Download the speech model?",
-        description: `Dictation needs the ${check.name} whisper model (${check.size}). It is downloaded once from Hugging Face.`,
-        confirm: "Download",
-      });
-      if (!confirmed) return false;
-      setStatus({ kind: "downloading", size: check.size });
-      try {
-        await whisper.download(check.name);
-      } finally {
-        setStatus(undefined);
       }
       return true;
     };
 
     const start = async (hold: boolean) => {
-      const composer = ctx.screen.current()?.composer;
-      if (!composer) {
-        notify({ title: "Open a session first", variant: "error" });
+      if (!ctx.screen.current()?.composer || !ctx.sessions.current()) {
+        notify({ title: "Сначала откройте сессию", variant: "error" });
         return;
       }
       if (!(await ready())) return;
+      if (!navigator.mediaDevices?.getUserMedia) {
+        notify({ title: "Микрофон недоступен в этом окне", variant: "error" });
+        return;
+      }
       recording = await record();
+      targetId = ctx.sessions.current()?.id;
       if (hold && !held) {
         discard();
-        notify({ title: `Hold ${recordKeys()} while you talk` });
+        notify({ title: `Удерживайте ${recordKeys()}, пока говорите` });
         return;
       }
       toast?.dismiss();
@@ -174,21 +195,33 @@ export default Plugin.define({
       setStatus({ kind: "transcribing" });
       let text: string;
       try {
-        const { model, language } = settings();
-        text = await whisper.transcribe({ wav: await current.stop(), model, language });
+        const { handyPath, model } = settings();
+        text = await handy.transcribe({
+          wav: await current.stop(),
+          handyPath,
+          model,
+        });
       } finally {
         setStatus(undefined);
       }
       if (!text) {
-        notify({ title: "No speech detected" });
+        notify({ title: "Речь не распознана" });
         return;
       }
       const composer = ctx.screen.current()?.composer;
       const session = ctx.sessions.current();
       if (!composer || !session) {
         await ctx.system.copy(text);
-        notify({ title: "No session open: transcript copied to clipboard" });
+        notify({ title: "Нет открытой сессии: текст скопирован в буфер обмена" });
         return;
+      }
+      // The composer follows the route. If the user moved to another session,
+      // keep the transcript instead of dropping it: insert into the current one.
+      if (targetId && session.id !== targetId) {
+        notify({
+          title: "Сессия изменилась — вставляю текст в текущую",
+          variant: "default",
+        });
       }
       // A non-empty prompt may hold mentions or attachments, so it is left for the user to send.
       if (settings().autoSend && composer.text().trim() === "") {
@@ -213,9 +246,177 @@ export default Plugin.define({
         await (recording ? finish(recording) : start(hold));
       } catch (err) {
         discard();
-        notify({ title: err instanceof Error ? err.message : String(err), variant: "error" });
+        notify({ title: errorText(err), variant: "error" });
       } finally {
         busy = false;
+      }
+    };
+
+    const buttonState = (): ComposerButtonState => {
+      const current = status();
+      if (current?.kind === "dictating") return "recording";
+      if (current?.kind === "transcribing") return "transcribing";
+      return "idle";
+    };
+
+    const buttonTitle = (state: ComposerButtonState) => {
+      const keys = recordKeys();
+      const suffix = keys ? ` (${keys})` : "";
+      if (state === "recording") return `Остановить диктовку${suffix}`;
+      if (state === "transcribing") return "Расшифровка…";
+      return `Диктовка через Handy${suffix}`;
+    };
+
+    mountComposerButton({
+      state: buttonState,
+      title: buttonTitle,
+      toggle: () => void toggle(),
+    });
+
+    const checkNow = async () => {
+      try {
+        const result = await handy.check(settings().handyPath);
+        if (result.handy) {
+          notify({
+            title: "Handy найден",
+            description: result.path,
+            variant: "success",
+            duration: 5000,
+          });
+        } else {
+          notify({
+            title: "Handy не найден",
+            description: result.error,
+            variant: "error",
+            duration: 10000,
+          });
+        }
+      } catch (err) {
+        notify({ title: errorText(err), variant: "error" });
+      }
+    };
+
+    const openHandyApp = async () => {
+      try {
+        await handy.open(settings().handyPath);
+        notify({
+          title: "Handy открыт",
+          description: "Скачайте модель в Handy и выберите её в настройках.",
+        });
+      } catch (err) {
+        notify({
+          title: "Не удалось открыть Handy",
+          description: errorText(err),
+          variant: "error",
+          duration: 10000,
+          actions: [
+            {
+              label: "Открыть handy.computer",
+              run: () => void ctx.system.openExternal(HANDY_URL),
+            },
+          ],
+        });
+      }
+    };
+
+    const installHandyApp = async () => {
+      const loading = ctx.toast.show({
+        title: "Установка Handy…",
+        description: "Это может занять пару минут.",
+        variant: "loading",
+        persistent: true,
+      });
+      try {
+        const result = await handy.install();
+        if (result.ok) {
+          notify({
+            title: "Handy установлен",
+            description: result.message,
+            variant: "success",
+            duration: 10000,
+          });
+        } else {
+          notify({
+            title: "Установка Handy",
+            description: result.message,
+            variant: result.manual ? "default" : "error",
+            duration: 12000,
+            actions: [
+              {
+                label: "Открыть handy.computer",
+                run: () => void ctx.system.openExternal(HANDY_URL),
+              },
+            ],
+          });
+        }
+      } catch (err) {
+        notify({
+          title: "Не удалось установить Handy",
+          description: errorText(err),
+          variant: "error",
+          duration: 12000,
+          actions: [
+            {
+              label: "Открыть handy.computer",
+              run: () => void ctx.system.openExternal(HANDY_URL),
+            },
+          ],
+        });
+      } finally {
+        loading.dismiss();
+      }
+    };
+
+    const pickModel = async () => {
+      try {
+        const models = await handy.models(settings().handyPath);
+        if (models.length === 0) {
+          notify({ title: "Handy не вернул список моделей", variant: "error" });
+          return;
+        }
+        const selected = await ctx.dialogs.select({
+          title: "Модель Handy",
+          current: settings().model || undefined,
+          options: models.map((model) => ({
+            title: `${model.name}${model.downloaded ? " ✓" : ""}`,
+            value: model.id,
+            description: [
+              `${Math.round(model.sizeMb)} МБ`,
+              model.languages.length ? model.languages.join(", ") : "",
+              model.downloaded ? "" : "не скачана",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+            category: model.downloaded
+              ? "Скачанные"
+              : model.recommended
+                ? "Рекомендуемые"
+                : "Другие",
+          })),
+        });
+        if (!selected) return;
+        const model = models.find((item) => item.id === selected);
+        if (!model) return;
+        if (!model.downloaded) {
+          notify({
+            title: "Модель ещё не скачана",
+            description: "Откройте Handy и скачайте её, затем выберите снова.",
+            duration: 10000,
+            actions: [{ label: "Открыть Handy", run: () => void openHandyApp() }],
+          });
+          return;
+        }
+        ctx.stores.settings.update((draft) => {
+          draft.model = selected;
+        });
+        notify({ title: "Модель выбрана", description: model.name, variant: "success" });
+      } catch (err) {
+        notify({
+          title: "Не удалось получить модели",
+          description: errorText(err),
+          variant: "error",
+          duration: 10000,
+        });
       }
     };
 
@@ -223,18 +424,19 @@ export default Plugin.define({
       id: "status",
       show: (): ComposerPillView | undefined => {
         const current = status();
-        if (current?.kind === "downloading")
-          return { label: `Downloading speech model (${current.size})…`, icon: "download" };
-        if (current?.kind === "transcribing")
-          return { label: "Transcribing…", icon: "pencil-line" };
+        if (current?.kind === "transcribing") return { label: "Расшифровка…", icon: "pencil-line" };
         if (current?.kind !== "dictating") return undefined;
         const keys = recordKeys();
-        const hint = keys ? ` · ${settings().pushToTalk ? `Release ${keys}` : keys} to stop` : "";
+        const hint = keys
+          ? ` · ${settings().pushToTalk ? `Отпустите ${keys}` : `${keys} — стоп`}`
+          : "";
         return {
-          label: `Dictating ${formatElapsed(current.elapsed)}${hint}`,
+          label: `Диктовка ${formatElapsed(current.elapsed)}${hint}`,
           icon: current.heard ? "waveform" : "dash",
           tone: current.heard ? "success" : "warning",
-          title: current.heard ? "The mic hears you. Click to stop" : "No sound from the mic",
+          title: current.heard
+            ? "Микрофон слышит вас. Нажмите, чтобы остановить"
+            : "Микрофон не слышит звук",
           run: () => void toggle(),
         };
       },
@@ -246,9 +448,9 @@ export default Plugin.define({
       show: (): ComposerPillView | undefined =>
         status()?.kind === "dictating" && !ctx.stores.intro.value.seen
           ? {
-              label: "Dictation settings",
+              label: "Настройки диктовки",
               icon: "info",
-              run: () => ctx.layout.settings("dictation"),
+              run: () => ctx.layout.settings("handy-voice"),
             }
           : undefined,
     });
@@ -283,15 +485,15 @@ export default Plugin.define({
     });
 
     ctx.add(SettingsPage, {
-      id: "dictation",
-      title: "Dictation",
+      id: "handy-voice",
+      title: "Handy Voice",
       icon: "waveform",
       entries: [
         {
-          id: "dictation",
-          title: "Dictation",
-          description: "Voice dictation with whisper.cpp",
-          keywords: "voice speech whisper microphone auto-send push-to-talk model language",
+          id: "handy-voice",
+          title: "Handy Voice",
+          description: "Локальная диктовка через Handy",
+          keywords: "голос диктовка микрофон handy gigaam whisper",
         },
       ],
       render: () => (
@@ -300,15 +502,19 @@ export default Plugin.define({
           system={ctx.system}
           settings={ctx.stores.settings}
           keys={() => ctx.keybinds.keybind(recordCommand)}
+          onCheck={checkNow}
+          onInstall={installHandyApp}
+          onOpenHandy={openHandyApp}
+          onPickModel={pickModel}
         />
       ),
     });
 
     ctx.add(Command, (): Command => ({
       id: "record",
-      title: "Dictation: record / transcribe",
+      title: "Handy Voice: диктовка (начать/остановить)",
       section: "prompt",
-      bind: "mod+d",
+      bind: "mod+shift+m",
       editable: true,
       // The shortcut's own keydown runs first. In push-to-talk, it already handled the key.
       run: () => {
@@ -320,7 +526,7 @@ export default Plugin.define({
 
     ctx.add(Command, (): Command => ({
       id: "cancel",
-      title: "Dictation: cancel recording",
+      title: "Handy Voice: отменить запись",
       section: "prompt",
       run: () => {
         if (recording) discard();
@@ -329,47 +535,30 @@ export default Plugin.define({
   },
 
   main(ctx) {
-    const log = (level: "debug" | "info", message: string) =>
-      ctx.log.write(level, `[dictation] ${message}`);
-    let downloading: Promise<void> | undefined;
+    ctx.provide(HandyIpc, {
+      check: async (value) => checkHandy(value),
 
-    ctx.provide(DictationIpc, {
-      check: async (name) => {
-        try {
-          const model = resolveModel(name);
-          const found = findModel(model) !== undefined;
-          return {
-            whisper: findWhisper() !== undefined,
-            model: found,
-            name: model,
-            size: found ? "" : await modelSize(model),
-          };
-        } catch (err) {
-          const error = err instanceof Error ? err.message : String(err);
-          return { whisper: false, model: false, name: "", size: "", error };
-        }
+      models: async (value) => listModels(resolveHandyPath(value)),
+
+      install: async () => installHandy(),
+
+      open: async (value) => {
+        await openApp(resolveHandyPath(value));
+        return true;
       },
 
-      download: async (name) => {
-        const model = resolveModel(name);
-        downloading ??= downloadModel(model)
-          .then(() => log("info", `Downloaded model ${model}`))
-          .finally(() => (downloading = undefined));
-        await downloading;
-      },
-
-      transcribe: async ({ wav, model, language }) => {
-        const modelFile = findModel(resolveModel(model));
-        const binary = findWhisper();
-        if (!modelFile || !binary) throw new Error("Speech model or whisper-cli missing");
+      transcribe: async ({ wav, handyPath, model }) => {
+        const binary = resolveHandyPath(handyPath);
         const started = Date.now();
-        const text = await transcribe(wav, {
+        const result = await transcribe(wav, {
           binary,
-          model: modelFile,
-          language: resolveLanguage(language),
+          model: resolveModel(model),
         });
-        log("debug", `Transcribed ${wav.length} bytes in ${Date.now() - started} ms`);
-        return text;
+        ctx.log.write(
+          "debug",
+          `[handy-voice] ${result.text.length} chars from ${wav.length} bytes in ${Date.now() - started} ms`,
+        );
+        return result.text;
       },
     });
   },

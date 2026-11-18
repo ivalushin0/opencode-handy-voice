@@ -1,43 +1,129 @@
-# opencode-dictation
+# Handy Voice для OpenCode Desktop
 
-Local voice dictation for the [OpenCode](https://opencode.ai) Desktop app on macOS.
+Локальная голосовая диктовка в [OpenCode Desktop](https://opencode.ai) через
+[Handy](https://handy.computer) — то же, что `handy-voice` делает в BB.
 
-![Dictating a message into the OpenCode prompt](assets/demo.gif)
+- Кнопка с микрофоном **слева от кнопки отправки**: нажали — пишет,
+  нажали ещё раз — расшифровывает и вставляет текст в черновик. Ничего не
+  отправляется само.
+- Сочетание клавиш `Ctrl+Shift+M` (меняется в **Settings → Shortcuts**,
+  раздел Handy Voice). Есть режим push-to-talk.
+- Звук и текст не уходят с компьютера: запись идёт в OpenCode, расшифровка —
+  в Handy на локальной модели.
+- Работает с любой моделью, выбранной в Handy. Для русского лучше всего
+  **GigaAM v3** (`gigaam-v3-e2e-rnnt`), для английского — Parakeet, для
+  многоязычной диктовки — Whisper Large v3 Turbo.
 
-- No audio leaves the machine.
-- Works with any [whisper.cpp](https://github.com/ggml-org/whisper.cpp) model.
-- Push-to-talk and auto-send options.
-- Desktop app only. It does not run in the terminal UI.
+## Требования
 
-## Requirements
+1. OpenCode Desktop 2.3.x или новее (нужны GUI-плагины `gui-experimental`).
+2. Установленный [Handy](https://handy.computer) и скачанная в нём модель.
+3. Разрешение на микрофон для OpenCode (обычно спрашивается при первом
+   нажатии; на Windows также проверьте **Параметры → Конфиденциальность →
+   Микрофон**).
 
-- macOS, OpenCode Desktop 2.2.5 or later
-- whisper.cpp:
+ffmpeg не нужен: плагин сам кодирует запись в WAV 16 кГц моно.
+
+## Установка
+
+На любом устройстве с OpenCode Desktop:
 
 ```bash
-brew install whisper-cpp
+opencode plugin add github:ivalushin0/opencode-handy-voice
 ```
 
-## Install
+Затем перезапустите OpenCode Desktop. Плагин приезжает уже собранным
+(`dist/gui-experimental.cjs`), собирать ничего не нужно. Node-зависимостей у
+него нет: GUI-бандл использует API самого OpenCode.
+
+Для локальной разработки можно указать папку в `~/.config/opencode/opencode.json`:
+
+```jsonc
+{
+  "plugins": [{ "package": "D:\\Dev\\BBhub\\opencode-plugin-handy-voice" }],
+}
+```
+
+### Что доустановить после плагина
+
+Сам плагин не тащит за собой Handy и модель — это отдельные приложения.
+Всё, что нужно, ставится из **Settings → Handy Voice**:
+
+1. **«Установка Handy» → «Установить»**. На Windows плагин запускает
+   `winget install cjpais.Handy`, на macOS — `brew install --cask handy`.
+   Если пакетного менеджера нет, откроется [handy.computer](https://handy.computer).
+2. **«Открыть Handy»** — в приложении Handy скачайте модель:
+   для русского — **GigaAM v3 E2E-RNN-T** (261 МБ), для английского —
+   Parakeet, для мультиязычной диктовки — Whisper.
+3. **«Модели Handy» → «Выбрать»** — плагин покажет список моделей и отметит
+   скачанные. Выберите GigaAM v3 (или другую скачанную).
+4. **«Проверить»** — покажет путь к Handy, если всё найдено.
+
+Модель скачивается внутри Handy: только Handy знает свой каталог и формат
+моделей, поэтому плагин открывает его, а не качает файлы сам.
+
+## Использование
+
+1. Откройте сессию и поставьте курсор в поле ввода.
+2. Нажмите кнопку с микрофоном слева от кнопки отправки или `Ctrl+Shift+M`.
+3. Говорите. Во время записи кнопка краснеет, а над полем ввода появляется
+   таймер; если микрофон не слышит звук, он подсвечивается предупреждением.
+4. Нажмите ещё раз (или `Ctrl+Shift+M`). Дождитесь «Расшифровка…» — текст
+   появится в черновике.
+
+Если включён **push-to-talk**, удерживайте сочетание, пока говорите, и
+отпустите для остановки.
+
+## Настройки
+
+**Settings → Handy Voice**:
+
+| Настройка        | По умолчанию | Смысл                                                                    |
+| ---------------- | ------------ | ------------------------------------------------------------------------ |
+| Установка Handy  | —            | `winget` на Windows, Homebrew на macOS, иначе страница загрузки.         |
+| Открыть Handy    | —            | Открыть Handy, чтобы скачать модель.                                     |
+| Модели Handy     | —            | Список моделей с отметкой скачанных; выбор пишется в настройку «Модель». |
+| Путь к Handy     | пусто        | Пусто — найти автоматически (Windows: `%LOCALAPPDATA%\Handy\handy.exe`). |
+| Модель           | пусто        | Пусто — модель, выбранная в Handy. Можно указать id явно.                |
+| Push-to-talk     | выкл.        | Удерживать сочетание вместо нажатия.                                     |
+| Отправлять сразу | выкл.        | Отправлять расшифровку сразу, не оставляя в черновике.                   |
+
+Кнопка **«Проверить»** проверяет, что Handy найден.
+
+## Как устроено
+
+1. `MediaRecorder` пишет микрофон в GUI-процессе OpenCode.
+2. Запись декодируется и перекодируется в WAV 16 кГц моно (без ffmpeg).
+3. WAV уходит по Ipc в главный процесс Electron.
+4. Главный процесс запускает
+   `handy --transcribe-file <wav> --json` (опционально `--model <id>`).
+5. Текст вставляется в поле ввода через `composer.insert(text)`.
+
+Если во время записи переключить сессию, текст вставится в текущую сессию
+с предупреждением — не потеряется.
+
+## Ограничения
+
+- Только OpenCode Desktop. В терминальном TUI кнопки нет; там проще
+  использовать глобальное сочетание Handy (`Ctrl+Space`).
+- GUI-плагины OpenCode пока экспериментальные и могут меняться между
+  релизами.
+- Кнопка рядом с отправкой вставлена в DOM композера: в 2.3.2 используются
+  `data-slot="composer-actions"` и `data-action="composer-submit"`. После
+  крупного обновления OpenCode селекторы могут измениться.
+- Нет потоковой расшифровки: текст появляется после остановки записи.
+- Нужна модель, уже скачанная в Handy.
+
+## Разработка
 
 ```bash
-opencode plugin add github:qonto/opencode-dictation
+npm install
+npm run typecheck
+npm test
+npm run bundle   # dist/gui-experimental.cjs
 ```
 
-Then restart Desktop.
+`dist/gui-experimental.cjs` нужно пересобирать и коммитить вместе с исходниками.
 
-## Usage
-
-Press `⌘D` to start recording, and again to stop. The transcript goes into the
-prompt. Change the key in **Settings → Shortcuts**.
-
-## Settings
-
-Open **Settings → Dictation**.
-
-| Setting            | Default               | What it does                                                                                                                         |
-| ------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Push-to-talk       | Off                   | Hold the shortcut while you talk, and let go to stop. Off: press once to start, once to stop.                                        |
-| Send automatically | Off                   | Send the transcript as soon as it is ready.                                                                                          |
-| Language           | `en`                  | A whisper language code such as `fr`, or `auto` to detect it (adds a short delay).                                                   |
-| Model              | `large-v3-turbo-q5_0` | Any [whisper.cpp model](https://huggingface.co/ggerganov/whisper.cpp/tree/main), without `ggml-` and `.bin`. Downloads on first use. |
+Основано на [qonto/opencode-dictation](https://github.com/qonto/opencode-dictation)
+(MIT), переделано с whisper.cpp на Handy.

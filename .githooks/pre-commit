@@ -1,0 +1,13 @@
+#!/bin/sh
+# Enable once per clone: git config core.hooksPath .githooks
+set -e
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+npm run --silent check
+npm test --silent
+npm run --silent bundle >/dev/null
+
+if ! git diff --quiet -- dist/; then
+  echo "dist/ is out of date. Stage the rebuilt bundle: git add dist/" >&2
+  exit 1
+fi

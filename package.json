@@ -1,0 +1,41 @@
+{
+  "name": "opencode-dictation",
+  "version": "0.3.1",
+  "private": true,
+  "description": "Local voice dictation for OpenCode Desktop on macOS, with whisper.cpp.",
+  "homepage": "https://github.com/qonto/opencode-dictation#readme",
+  "bugs": "https://github.com/qonto/opencode-dictation/issues",
+  "license": "MIT",
+  "author": "Qonto",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qonto/opencode-dictation.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    "./gui-experimental": "./dist/gui-experimental.cjs"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
+    "lint": "oxlint --ignore-pattern dist .",
+    "fmt": "oxfmt --check .",
+    "fmt:fix": "oxfmt --write .",
+    "check": "npm run lint && npm run fmt && npm run typecheck",
+    "bundle": "vite build"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "^2.2.5",
+    "@types/node": "^24.19.2",
+    "effect": "4.0.6",
+    "oxfmt": "0.79.0",
+    "oxlint": "1.65.0",
+    "solid-js": "^1.9.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.7",
+    "vite-plugin-solid": "^2.11.15"
+  }
+}
